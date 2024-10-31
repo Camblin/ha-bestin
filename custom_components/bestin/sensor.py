@@ -7,6 +7,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.components.sensor import SensorEntity
 
 from .const import (
     NEW_SENSOR,
@@ -65,7 +66,7 @@ async def async_setup_entry(
     async_add_sensor()
 
 
-class BestinSensor(BestinDevice):
+class BestinSensor(BestinDevice, SensorEntity):
     """Defined the Sensor."""
     TYPE = DOMAIN_SENSOR
 
