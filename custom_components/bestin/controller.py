@@ -676,6 +676,7 @@ class BestinController:
             if header == 0x28:
                 room_id, device_state = self.parse_thermostat(packet)
                 if room_id is None or device_state is None:
+                    LOGGER.debug(f"Unknown thermostat packet: {packet.hex()} from self.connection {self.connection.conn_str}")
                     pass
                 device_id = f"thermostat_{room_id}"
                 self.set_device(device_id, device_state)
@@ -701,11 +702,16 @@ class BestinController:
                 0x41: (self.parse_doorlock, "doorlock"),
                 0x61: (self.parse_fan, "fan"),
             }
+            LOGGER.info(f"Received packet: {packet.hex()} from self.connection {self.connection.conn_str}")    
             if header in parser_mapping:
                 parse_func, device_type = parser_mapping[header]
                 room_id, device_state = parse_func(packet)
                 device_id = f"{device_type}_{room_id}"
                 self.set_device(device_id, device_state)
+        elif header == 0xD1 and packet_len == 7:
+            # I think this is a response to a command, but we don't have enough information to parse it
+            # there are two many possibilities for the command, so we will just ignore it for now
+            pass
         elif command not in [0x00, 0x11, 0x21, 0xA1]:
             LOGGER.warning(f"Unknown device packet: {packet.hex()} from self.connection {self.connection.conn_str}")
             pass
