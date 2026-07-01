@@ -6,8 +6,15 @@ from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN, ClimateEn
 from homeassistant.components.climate.const import (
     ATTR_HVAC_MODE,
     ATTR_CURRENT_TEMPERATURE,
+    ATTR_HVAC_ACTION,
+    ATTR_PRESET_MODE,
+    SERVICE_SET_HVAC_MODE,
     SERVICE_SET_TEMPERATURE,
+    SERVICE_SET_PRESET_MODE,
     ClimateEntityFeature,
+    PRESET_NONE,
+    PRESET_AWAY,
+    HVACAction,
     HVACMode,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -25,6 +32,10 @@ from .const import CONF_VERSION, NEW_CLIMATE
 from .device import BestinDevice
 from .hub import BestinHub
 
+PRESET_MODE_MAP = {
+    "AWAY": PRESET_AWAY,
+    "OFF": PRESET_NONE,
+}
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -69,7 +80,8 @@ class BestinClimate(BestinDevice, ClimateEntity):
         self._supported_features = (
             ClimateEntityFeature.TARGET_TEMPERATURE | 
             ClimateEntityFeature.TURN_ON | 
-            ClimateEntityFeature.TURN_OFF
+            ClimateEntityFeature.TURN_OFF |
+            ClimateEntityFeature.PRESET_MODE
         )
         self._hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
         self._version_exists = getattr(hub.api, CONF_VERSION, False)
@@ -111,21 +123,34 @@ class BestinClimate(BestinDevice, ClimateEntity):
             await self.enqueue_command(mode=hvac_mode == HVACMode.HEAT)
 
     @property
-    def preset_mode(self):
+    def preset_mode(self) -> str:
         """Return the current preset mode, e.g., home, away, temp.
         Requires ClimateEntityFeature.PRESET_MODE.
         """
+        return self._device_info.state[ATTR_PRESET_MODE]
 
     @property
     def preset_modes(self) -> list:
         """Return the list of available preset modes."""
-
-    async def async_set_preset_mode(self, preset_mode):
+        return [
+            PRESET_NONE, PRESET_AWAY
+            # for mode in self._device.traits[ThermostatEcoTrait.NAME].available_modes
+            # if mode in PRESET_MODE_MAP
+        ]
+        
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set new target preset mode."""
-
+        if preset_mode not in self.preset_modes:
+            raise ValueError(f"Unsupported preset_mode '{preset_mode}'")
+        if self.preset_mode == preset_mode:  # API doesn't like duplicate preset modes
+            return
+        else :
+            await self.enqueue_command(SERVICE_SET_PRESET_MODE=preset_mode)
+ 
     @property
-    def hvac_action(self):
-        """Return the current action."""
+    def hvac_action(self) -> HVACAction | None:
+        """Return the current HVAC action (heating, idle)."""
+        return self._device_info.state[ATTR_HVAC_ACTION]
 
     @property
     def current_temperature(self) -> float:
@@ -167,4 +192,4 @@ class BestinClimate(BestinDevice, ClimateEntity):
     @property
     def target_temperature_step(self) -> float:
         """Step tempreature."""
-        return 0.5
+        return 1.0

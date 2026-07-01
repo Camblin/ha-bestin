@@ -3,11 +3,16 @@ from typing import Any, Callable
 
 from homeassistant.components.climate.const import (
     SERVICE_SET_TEMPERATURE,
+    SERVICE_SET_PRESET_MODE,
     ATTR_HVAC_MODE,
     ATTR_PRESET_MODE,
     ATTR_PRESET_MODES,
     ATTR_CURRENT_TEMPERATURE,
+    ATTR_HVAC_ACTION,
+    HVACAction,
     HVACMode,
+    PRESET_NONE,
+    PRESET_AWAY,
 )
 from homeassistant.components.fan import SERVICE_SET_PERCENTAGE
 from homeassistant.components.light import (
@@ -247,8 +252,22 @@ class BestinController:
             packet[7] = value_int & 0xFF
             if value_float != 0:
                 packet[7] |= 0x40
-        else:
+            LOGGER.info(f"room{room_id}'s temperature changed to {value_int}")
+        elif sub_type == 'SERVICE_SET_PRESET_MODE' :
+            #FIXME: why sub_type is string with SERVICE_SET_PRESET_MODE?
+            LOGGER.warning(f"room{room_id}'s preset mode is changed to {value}")
+            if value == PRESET_AWAY:
+                packet[6] = 0x03
+            elif value == PRESET_NONE:
+                packet[6] = 0x01 # turn on when removing away mode
+            else:
+                LOGGER.warning(f"Unsupporetd value({value}) for set_preset_mode")
+        elif sub_type == 'mode' :
+            #TODO: change to info
+            LOGGER.warning(f"room{room_id}'s {sub_type} is changed to {value}")
             packet[6] = 0x01 if value else 0x02
+        else :
+            LOGGER.warning(f"Unsupported sub_type: {sub_type}")
 
         packet[-1] = self.calculate_checksum(packet)
         return packet
@@ -412,16 +431,36 @@ class BestinController:
 
     def parse_thermostat(self, packet: bytearray) -> tuple[dict, int]:
         """Parse thermostat data from a packet"""
+        if packet[3] != 0x91:
+            LOGGER.error(f"packet: {packet.hex()}")
+            return None, None
         room_id = packet[5] & 0x0F
-        is_heating = bool(packet[6] & 0x01)
+        # BIT 0 : Power On and Off (e.g. 0x01)
+        # BIT 1 : AWAY             (e.g. 0x03)
+        # BIT 2 : 
+        # bit 3 : 
+        # BIT 4 : HEATING 
+        is_on = bool(packet[6] & 0x01)
+        is_away = bool(packet[6] & 0x02)
+        is_heating = bool(packet[6] & 0x10)
         target_temperature = (packet[7] & 0x3F) + (packet[7] & 0x40 > 0) * 0.5
         current_temperature = int.from_bytes(packet[8:10], byteorder="big") / 10.0
-        hvac_mode = HVACMode.HEAT if is_heating else HVACMode.OFF
-
+        hvac_mode = HVACMode.HEAT if is_on else HVACMode.OFF
+        if is_on is True :
+            if is_heating is True:
+                hvac_action = HVACAction.HEATING
+            else:
+                hvac_action = HVACAction.IDLE
+        else:
+            hvac_action = HVACAction.OFF
+        hvac_preset_mode = PRESET_AWAY if is_away else PRESET_NONE
         thermostat_state = {
             ATTR_HVAC_MODE: hvac_mode,
             SERVICE_SET_TEMPERATURE: target_temperature,
-            ATTR_CURRENT_TEMPERATURE: current_temperature
+            ATTR_CURRENT_TEMPERATURE: current_temperature,
+            ATTR_HVAC_ACTION: hvac_action,
+            ATTR_PRESET_MODE: hvac_preset_mode,
+            ATTR_PRESET_MODES: [PRESET_AWAY, PRESET_NONE],
         }
         return room_id, thermostat_state
     
@@ -593,6 +632,14 @@ class BestinController:
 
     async def send_packet_queue(self, queue: dict):
         """Send a packet from the queue"""
+        # dynamically call the appropriate packet maker method based on device type
+        # e.g.,
+        # - make_light_packet
+        # - make_outlet_packet
+        # - make_thermostat_packet
+        # - make_gas_packet
+        # - make_doorlock_packet
+        # - make_fan_packet
         command_packet = getattr(self, f"make_{queue['device_type']}_packet", None)(
             queue["timestamp"],
             queue["room_id"],
@@ -628,6 +675,8 @@ class BestinController:
         if packet_len != 10 and command in [0x81, 0x82, 0x91, 0x92, 0xB2]:
             if header == 0x28:
                 room_id, device_state = self.parse_thermostat(packet)
+                if room_id is None or device_state is None:
+                    pass
                 device_id = f"thermostat_{room_id}"
                 self.set_device(device_id, device_state)
             elif (
@@ -658,8 +707,8 @@ class BestinController:
                 device_id = f"{device_type}_{room_id}"
                 self.set_device(device_id, device_state)
         elif command not in [0x00, 0x11, 0x21, 0xA1]:
+            LOGGER.warning(f"Unknown device packet: {packet.hex()} from self.connection {self.connection.conn_str}")
             pass
-            #LOGGER.warning(f"Unknown device packet: {packet.hex()}")
     
     async def handle_packet_queue(self, queue: dict):
         """Handle a packet from the queue"""
