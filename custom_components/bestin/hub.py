@@ -382,6 +382,37 @@ class BestinHub:
 
         await self.connection.connect()
         return self.available
+
+    async def _persist_gateway_mode(self) -> None:
+        """Persist the detected gateway mode into the config entry."""
+        self.hass.config_entries.async_update_entry(
+            entry=self.entry,
+            data={**self.entry.data, "gateway_mode": self.gateway_mode},
+        )
+
+    async def _initialize_controller_api(self) -> None:
+        """Initialize the local controller API for serial/socket gateways."""
+        self.api = BestinController(
+            self.hass,
+            self.entry,
+            self.entity_groups,
+            self.hub_id,
+            self.connection,
+            self.async_add_device_callback,
+        )
+        await self.api.start()
+
+    async def _initialize_center_api(self) -> None:
+        """Initialize the cloud-based center API."""
+        self.api = BestinCenterAPI(
+            self.hass,
+            self.entry,
+            self.entity_groups,
+            self.hub_id,
+            self.cntr_version,
+            self.async_add_device_callback,
+        )
+        await self.api.start()
     
     async def async_close(self) -> None:
         """Close the hub connection."""
@@ -408,19 +439,8 @@ class BestinHub:
             if self.gateway_mode is None:
                 await self.determine_gateway_mode()
 
-            self.hass.config_entries.async_update_entry(
-                entry=self.entry,
-                data={**self.entry.data, "gateway_mode": self.gateway_mode},
-            )
-            self.api = BestinController(
-                self.hass,
-                self.entry,
-                self.entity_groups,
-                self.hub_id,
-                self.connection,
-                self.async_add_device_callback,
-            )
-            await self.api.start()
+            await self._persist_gateway_mode()
+            await self._initialize_controller_api()
         except Exception as ex:
             self.api = None
             raise RuntimeError(
@@ -431,15 +451,7 @@ class BestinHub:
     async def async_initialize_center(self) -> None:
         """Initialize the center connection."""
         try:
-            self.api = BestinCenterAPI(
-                self.hass,
-                self.entry,
-                self.entity_groups,
-                self.hub_id,
-                self.cntr_version,
-                self.async_add_device_callback,
-            )
-            await self.api.start()
+            await self._initialize_center_api()
         except Exception as ex:
             self.api = None
             raise RuntimeError(
