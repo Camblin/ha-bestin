@@ -147,7 +147,7 @@ class ConfigFlow(ConfigFlow, domain=DOMAIN):
                     LOGGER.info(f"V2 login successful: {resp}")
                     return resp, None
                 elif response.status == 500:
-                    LOGGER.error(f"V2 login failed (500): {resp["err"]}")
+                    LOGGER.error(f"V2 login failed (500): {resp['err']}")
                     return None, ("login_failed", resp["err"])
                 else:
                     LOGGER.error(f"V2 login failed. Status: {response.status}")

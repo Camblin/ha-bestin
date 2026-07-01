@@ -17,6 +17,7 @@ from homeassistant.components.climate.const import (
     HVACMode,
 )
 from .compat import get_color_mode_constants
+from .parsers import parse_temper_status, parse_thermostat_status, parse_ventil_status
 
 COLOR_MODE_BRIGHTNESS, COLOR_MODE_COLOR_TEMP = get_color_mode_constants()
 from homeassistant.helpers.event import async_track_time_interval
@@ -207,12 +208,7 @@ class CenterAPIv2:
             "User-Agent": "Mozilla/5.0",
             "access-token": self.entry.data[CONF_SESSION]["access-token"],
         }
-        data = {"unit": unit, "state": value}
-        
-        if device_type == "ventil":
-            data.update({"unit": unit[:-1], "mode": "", "unit_mode": ""})
-        if device_type == "smartlight":
-            data.update({"unit": unit[-1], **value})
+        data = self._build_feature_command_payload(device_type, unit, value)
 
         try:
             async with self.session.put(url=url, headers=headers, json=data) as response:
@@ -383,9 +379,10 @@ class BestinCenterAPI(CenterAPIv2):
                 task()
             self.tasks = []
 
-    @callback
-    async def enqueue_command(self, device_id: str, value: Any, **kwargs: dict | None):
-        """Enqueue a command for a device."""
+    def _parse_command_target(
+        self, device_id: str, default_value: Any, kwargs: dict | None = None
+    ) -> tuple[str, int, int, str | None, Any]:
+        """Parse a device_id and optional kwargs into a command target."""
         parts = device_id.split("_")
         device_type = parts[1]
         room_id = int(parts[2])
@@ -400,22 +397,45 @@ class BestinCenterAPI(CenterAPIv2):
         if len(parts) > 4:
             pos_id = int(parts[4])
             sub_type = parts[3]
+
+        command_value = default_value
         if kwargs:
-            sub_type, value = next(iter(kwargs.items()))
+            sub_type, command_value = next(iter(kwargs.items()))
+
+        return device_type, room_id, pos_id, sub_type, command_value
+
+    def _build_feature_command_payload(
+        self, device_type: str, unit: str, value: dict | str
+    ) -> dict[str, Any]:
+        """Build the payload for a feature command request."""
+        data = {"unit": unit, "state": value}
+
+        if device_type == "ventil":
+            data.update({"unit": unit[:-1], "mode": "", "unit_mode": ""})
+        if device_type == "smartlight":
+            data.update({"unit": unit[-1], **value})
+
+        return data
+
+    @callback
+    async def enqueue_command(self, device_id: str, value: Any, **kwargs: dict | None):
+        """Enqueue a command for a device."""
+        device_type, room_id, pos_id, sub_type, command_value = self._parse_command_target(
+            device_id, value, kwargs
+        )
 
         if self.version == SMART_HOME_1:
             if device_type == "doorlock":
                 LOGGER.warning("For doorlock, command is not supported.")
             else:
-                unit_id = f"{sub_type}{pos_id or room_id}" \
-                    if kwargs else f"{device_type}{pos_id or ''}"
-                await self.request_home_device(device_type, room_id, unit_id, value)
+                unit_id = f"{sub_type}{pos_id or room_id}" if kwargs else f"{device_type}{pos_id or ''}"
+                await self.request_home_device(device_type, room_id, unit_id, command_value)
         else:
             if device_type == "elevator":
                 await self.elevator_call_request()
             else:
                 unit_id = f"{sub_type}{pos_id or room_id}" if kwargs else f"{device_type}1"
-                await self.request_feature_command(device_type, room_id, unit_id, value)
+                await self.request_feature_command(device_type, room_id, unit_id, command_value)
 
     def get_devices_from_domain(self, domain: str) -> list:
         """Get devices for a specific domain."""
@@ -541,39 +561,19 @@ class BestinCenterAPI(CenterAPIv2):
         self, device_number: int, unit_num: str, unit_status: str
     ):
         """Parse thermostat status."""
-        status_parts = unit_status.split("/")
-        status_value = {
-            ATTR_HVAC_MODE: HVACMode.HEAT if status_parts[0] == "on" else HVACMode.OFF,
-            SERVICE_SET_TEMPERATURE: float(status_parts[1]),
-            ATTR_CURRENT_TEMPERATURE: float(status_parts[2])
-        }
-        self.set_device("thermostat", unit_num, None, status_value)
+        self.set_device("thermostat", unit_num, None, parse_thermostat_status(unit_status))
 
     def _parse_temper_status(
         self, device_number: int, unit_num: str, unit_status: str
     ):
         """Parse temper(thermostat) status."""
-        status_parts = unit_status.split("/")
-        status_value = {
-            ATTR_HVAC_MODE: HVACMode.HEAT if status_parts[0] == "on" else HVACMode.OFF,
-            SERVICE_SET_TEMPERATURE: float(status_parts[1]),
-            ATTR_CURRENT_TEMPERATURE: float(status_parts[2])
-        }
-        self.set_device("temper", unit_num, None, status_value)
+        self.set_device("temper", unit_num, None, parse_temper_status(unit_status))
     
     def _parse_ventil_status(
         self, device_number: int, unit_num: str, unit_status: str
     ):
         """Parse ventilation status."""
-        is_off = unit_status == "off"
-        speed_list = [SPEED_STR_LOW, SPEED_STR_MEDIUM, SPEED_STR_HIGH]
-        status_value = {
-            ATTR_STATE: not is_off,
-            WIND_SPEED: unit_status if not is_off else "off",
-            "speed_list": speed_list,
-            ATTR_PRESET_MODE: None,
-        }
-        self.set_device("ventil", device_number, None, status_value)
+        self.set_device("ventil", device_number, None, parse_ventil_status(unit_status))
 
     async def _v1_device_status(self, args=None):
         """Update device status for v1 API."""
