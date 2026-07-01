@@ -312,18 +312,20 @@ class BestinController:
 
         packet[-1] = self.calculate_checksum(packet)
         return packet
-    
-    @callback
-    async def enqueue_command(self, device_id: str, value: Any, **kwargs: dict | None):
-        """Enqueue a command for a device"""
+
+    def _parse_command_target(
+        self, device_id: str, default_value: Any, kwargs: dict | None = None
+    ) -> tuple[str, int, int, str | None, Any]:
+        """Parse a device_id and optional kwargs into a command target."""
         parts = device_id.split("_")
         device_type = parts[1]
         room_id = int(parts[2])
         pos_id = 0
         sub_type = None
-        
+
+        command_value = default_value
         if kwargs:
-            sub_type, value = next(iter(kwargs.items()))
+            sub_type, command_value = next(iter(kwargs.items()))
         if len(parts) == 4 and not parts[3].isdigit():
             sub_type = parts[3]
         elif len(parts) == 4 and parts[3].isdigit():
@@ -332,7 +334,13 @@ class BestinController:
             pos_id = int(parts[4])
             sub_type = parts[3]
 
-        queue_task = {
+        return device_type, room_id, pos_id, sub_type, command_value
+
+    def _build_queue_task(
+        self, device_type: str, room_id: int, pos_id: int, sub_type: str | None, value: Any
+    ) -> dict[str, Any]:
+        """Build a queue item for later packet sending."""
+        return {
             "send_retry": 1,
             "timestamp": self.timestamp,
             "device_type": device_type,
@@ -343,28 +351,73 @@ class BestinController:
             "command_packet": None,
             "acknowledgment": None,
         }
+
+    def _build_packet_for_queue_item(self, queue_item: dict[str, Any]) -> bytearray | None:
+        """Create a packet from a queued command item."""
+        return getattr(
+            self,
+            f"make_{queue_item['device_type']}_packet",
+            None,
+        )(
+            queue_item["timestamp"],
+            queue_item["room_id"],
+            queue_item["pos_id"],
+            queue_item["sub_type"],
+            queue_item["value"],
+        )
+    
+    @callback
+    async def enqueue_command(self, device_id: str, value: Any, **kwargs: dict | None):
+        """Enqueue a command for a device"""
+        device_type, room_id, pos_id, sub_type, command_value = self._parse_command_target(
+            device_id, value, kwargs
+        )
+        queue_task = self._build_queue_task(
+            device_type, room_id, pos_id, sub_type, command_value
+        )
         LOGGER.debug(f"Create queue task: {queue_task}")
         await self.queue.put(queue_task)
     
+    def _build_device_name(self, device_type: str, device_room: str, sub_id: str | None) -> str:
+        """Create a readable name for a device."""
+        if sub_id:
+            sub_id_parts = sub_id.split("_")
+            return f"{device_type} {device_room} {' '.join(sub_id_parts)}".title()
+        return f"{device_type} {device_room}".title()
+
+    def _resolve_device_platform(self, device_type: str, sub_id: str | None) -> str:
+        """Resolve the Home Assistant platform for a device type."""
+        if device_type not in ["energy"] and sub_id and not sub_id.isdigit():
+            format_device = f"{device_type}:{''.join(filter(str.isalpha, sub_id))}"
+            return DEVICE_PLATFORM_MAP[format_device]
+        return DEVICE_PLATFORM_MAP[device_type]
+
+    def _register_device(self, device: DeviceProfile, device_platform: str) -> None:
+        """Register a new device with the Home Assistant callback if needed."""
+        device_uid = device.unique_id
+        if device_uid not in self.entity_groups.get(device_platform, []):
+            signal = PLATFORM_SIGNAL_MAP[device_platform]
+            self.add_device_callback(signal, device)
+
+    def _update_device_state(self, device: DeviceProfile, sub_state: Any) -> None:
+        """Update the device state and notify listeners when it changes."""
+        device_info = device.info
+        if device_info.state != sub_state:
+            device_info.state = sub_state
+            device.update_callbacks()
+
     def initial_device(self, device_id: str, sub_id: str | None, state: Any) -> dict:
         """Initialize a device"""
         device_type, device_room = device_id.split("_")
-    
+
         did_suffix = f"_{sub_id}" if sub_id else ""
         device_id = f"{BRAND_PREFIX}_{device_id}{did_suffix}"
-        if sub_id:
-            sub_id_parts = sub_id.split("_")
-            device_name = f"{device_type} {device_room} {' '.join(sub_id_parts)}".title()
-        else:
-            device_name = f"{device_type} {device_room}".title()
-        
+        device_name = self._build_device_name(device_type, device_room, sub_id)
+
         if device_type not in ["energy"] and sub_id and not sub_id.isdigit():
             device_type = f"{device_type}:{''.join(filter(str.isalpha, sub_id))}"
-        
-        if device_type not in MAIN_DEVICES:
-            uid_suffix = f"-{self.hub_id}"
-        else:
-            uid_suffix = ""
+
+        uid_suffix = f"-{self.hub_id}" if device_type not in MAIN_DEVICES else ""
         unique_id = f"{device_id}{uid_suffix}"
 
         if device_id not in self.devices:
@@ -394,22 +447,9 @@ class BestinController:
         sub_states = state.items() if is_sub else [(None, state)]
         for sub_id, sub_state in sub_states:
             device = self.initial_device(device_id, sub_id, sub_state)
-
-            if device_type not in ["energy"] and sub_id and not sub_id.isdigit():
-                format_device = f"{device_type}:{''.join(filter(str.isalpha, sub_id))}"
-                device_platform = DEVICE_PLATFORM_MAP[format_device]
-            else:
-                device_platform = DEVICE_PLATFORM_MAP[device_type]
-            
-            device_uid = device.unique_id
-            device_info = device.info
-            if device_uid not in self.entity_groups.get(device_platform, []):
-                signal = PLATFORM_SIGNAL_MAP[device_platform]
-                self.add_device_callback(signal, device)
-
-            if device_info.state != sub_state:
-                device_info.state = sub_state
-                device.update_callbacks()
+            device_platform = self._resolve_device_platform(device_type, sub_id)
+            self._register_device(device, device_platform)
+            self._update_device_state(device, sub_state)
 
     def make_common_packet(
         self,
@@ -632,21 +672,7 @@ class BestinController:
 
     async def send_packet_queue(self, queue: dict):
         """Send a packet from the queue"""
-        # dynamically call the appropriate packet maker method based on device type
-        # e.g.,
-        # - make_light_packet
-        # - make_outlet_packet
-        # - make_thermostat_packet
-        # - make_gas_packet
-        # - make_doorlock_packet
-        # - make_fan_packet
-        command_packet = getattr(self, f"make_{queue['device_type']}_packet", None)(
-            queue["timestamp"],
-            queue["room_id"],
-            queue["pos_id"],
-            queue["sub_type"],
-            queue["value"]
-        )
+        command_packet = self._build_packet_for_queue_item(queue)
         if command_packet is None:
             LOGGER.error("No packet maker for device '%s'", queue["device_type"])
             return
