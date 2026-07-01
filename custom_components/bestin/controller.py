@@ -15,10 +15,25 @@ from homeassistant.components.climate.const import (
     PRESET_AWAY,
 )
 from homeassistant.components.fan import SERVICE_SET_PERCENTAGE
-from homeassistant.components.light import (
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
-)
+
+try:
+    from homeassistant.components.light import (
+        COLOR_MODE_BRIGHTNESS,
+        COLOR_MODE_COLOR_TEMP,
+    )
+except Exception:  # pragma: no cover - compatibility fallback
+    try:
+        from homeassistant.components.light import ColorMode
+
+        def _cm_get(name: str, default: str):
+            member = getattr(ColorMode, name, None)
+            return member.value if hasattr(member, "value") else (member or default)
+
+        COLOR_MODE_BRIGHTNESS = _cm_get("BRIGHTNESS", "brightness")
+        COLOR_MODE_COLOR_TEMP = _cm_get("COLOR_TEMP", "color_temp")
+    except Exception:  # pragma: no cover - final fallback
+        COLOR_MODE_BRIGHTNESS = "brightness"
+        COLOR_MODE_COLOR_TEMP = "color_temp"
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import ATTR_STATE, WIND_SPEED

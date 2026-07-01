@@ -16,10 +16,26 @@ from homeassistant.components.climate.const import (
     ATTR_CURRENT_TEMPERATURE,
     HVACMode,
 )
-from homeassistant.components.light import (
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
-)
+# COLOR_MODE_* constants were removed/renamed in newer HA versions.
+# Try to import old constants first; fall back to ColorMode enum or strings.
+try:
+    from homeassistant.components.light import (
+        COLOR_MODE_BRIGHTNESS,
+        COLOR_MODE_COLOR_TEMP,
+    )
+except Exception:  # pragma: no cover - compatibility fallback
+    try:
+        from homeassistant.components.light import ColorMode
+
+        def _cm_get(name: str, default: str):
+            member = getattr(ColorMode, name, None)
+            return member.value if hasattr(member, "value") else (member or default)
+
+        COLOR_MODE_BRIGHTNESS = _cm_get("BRIGHTNESS", "brightness")
+        COLOR_MODE_COLOR_TEMP = _cm_get("COLOR_TEMP", "color_temp")
+    except Exception:  # pragma: no cover - final fallback
+        COLOR_MODE_BRIGHTNESS = "brightness"
+        COLOR_MODE_COLOR_TEMP = "color_temp"
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
