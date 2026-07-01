@@ -12,23 +12,9 @@ from homeassistant.components.light import (
     ATTR_COLOR_TEMP_KELVIN,
 )
 
-# COLOR_MODE_* constants may be absent in some HA versions. Provide compatibility.
-try:
-    from homeassistant.components.light import (
-        COLOR_MODE_BRIGHTNESS,
-        COLOR_MODE_COLOR_TEMP,
-    )
-except Exception:  # pragma: no cover - compatibility fallback
-    try:
-        def _cm_get(name: str, default: str):
-            member = getattr(ColorMode, name, None)
-            return member.value if hasattr(member, "value") else (member or default)
+from .compat import get_color_mode_constants
 
-        COLOR_MODE_BRIGHTNESS = _cm_get("BRIGHTNESS", "brightness")
-        COLOR_MODE_COLOR_TEMP = _cm_get("COLOR_TEMP", "color_temp")
-    except Exception:  # pragma: no cover - final fallback
-        COLOR_MODE_BRIGHTNESS = "brightness"
-        COLOR_MODE_COLOR_TEMP = "color_temp"
+COLOR_MODE_BRIGHTNESS, COLOR_MODE_COLOR_TEMP = get_color_mode_constants()
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_ON, STATE_OFF, ATTR_STATE
 from homeassistant.core import callback, HomeAssistant
